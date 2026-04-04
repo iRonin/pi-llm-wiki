@@ -1,5 +1,8 @@
 # pi-llm-wiki
 
+> Inspired by Andrej Karpathy’s “LLM Wiki” gist: https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f  
+> This package is a Pi-native implementation of that idea.
+
 Build a **persistent, LLM-maintained markdown wiki** inside [pi](https://pi.dev) with immutable source capture, interlinked knowledge pages, generated navigation metadata, and a bundled wiki-maintainer skill.
 
 `pi-llm-wiki` implements the “LLM wiki” pattern as a Pi-native package:

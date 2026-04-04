@@ -8,6 +8,7 @@ The format is based on Keep a Changelog and the project uses Semantic Versioning
 
 ### Added
 - Initial release of `pi-llm-wiki`
+- README now explicitly credits Andrej Karpathy’s LLM Wiki gist as the inspiration for this implementation
 - Pi extension with wiki bootstrap, source capture, search, page resolution, lint, status, event logging, and metadata rebuild tools
 - Bundled `llm-wiki` skill
 - Immutable raw-source capture packets
