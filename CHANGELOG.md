@@ -10,7 +10,7 @@ The format is based on Keep a Changelog and the project uses Semantic Versioning
 - 
 
 ### Changed
-- 
+- Updated GitHub Actions workflows to newer action versions and GitHub CLI-based release creation to avoid Node 20 deprecation warnings.
 
 ### Fixed
 - 
