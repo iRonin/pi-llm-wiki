@@ -3,11 +3,6 @@
 > Inspired by Andrej Karpathy’s “LLM Wiki” gist: https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f  
 > This package is a Pi-native implementation of that idea.
 
-[![CI](https://github.com/Kausik-A/pi-llm-wiki/actions/workflows/ci.yml/badge.svg)](https://github.com/Kausik-A/pi-llm-wiki/actions/workflows/ci.yml)
-[![GitHub Release](https://img.shields.io/github/v/release/Kausik-A/pi-llm-wiki?display_name=tag)](https://github.com/Kausik-A/pi-llm-wiki/releases)
-[![npm version](https://img.shields.io/npm/v/pi-llm-wiki)](https://www.npmjs.com/package/pi-llm-wiki)
-[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)
-
 Build a **persistent, LLM-maintained markdown wiki** inside [pi](https://pi.dev) with immutable source capture, interlinked knowledge pages, generated navigation metadata, and a bundled wiki-maintainer skill.
 
 `pi-llm-wiki` implements the “LLM wiki” pattern as a Pi-native package:
