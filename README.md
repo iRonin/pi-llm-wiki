@@ -3,6 +3,11 @@
 > Inspired by Andrej Karpathy’s “LLM Wiki” gist: https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f  
 > This package is a Pi-native implementation of that idea.
 
+[![CI](https://github.com/Kausik-A/pi-llm-wiki/actions/workflows/ci.yml/badge.svg)](https://github.com/Kausik-A/pi-llm-wiki/actions/workflows/ci.yml)
+[![GitHub Release](https://img.shields.io/github/v/release/Kausik-A/pi-llm-wiki?display_name=tag)](https://github.com/Kausik-A/pi-llm-wiki/releases)
+[![npm version](https://img.shields.io/npm/v/pi-llm-wiki)](https://www.npmjs.com/package/pi-llm-wiki)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)
+
 Build a **persistent, LLM-maintained markdown wiki** inside [pi](https://pi.dev) with immutable source capture, interlinked knowledge pages, generated navigation metadata, and a bundled wiki-maintainer skill.
 
 `pi-llm-wiki` implements the “LLM wiki” pattern as a Pi-native package:
@@ -320,6 +325,43 @@ This repo includes:
 
 - **CI** on push and pull request: runs `npm ci`, `npm run check`, and `npm pack --dry-run`
 - **Release** on `v*` tags: runs checks, publishes to npm, and creates a GitHub release with generated notes
+
+For a fuller walkthrough, see [`RELEASING.md`](./RELEASING.md).
+
+### First-time npm publishing checklist
+
+Before the first automated release, do this once:
+
+1. Ensure the npm package name is available:
+
+```bash
+npm view pi-llm-wiki version
+```
+
+2. Log in locally if you want to do a manual first publish:
+
+```bash
+npm login
+```
+
+3. Create an npm automation token in npm:
+   - npmjs.com → Account Settings → Access Tokens
+   - Create a token with publish permission for `pi-llm-wiki`
+
+4. Add the token as a GitHub repository secret:
+
+```bash
+gh secret set NPM_TOKEN --repo Kausik-A/pi-llm-wiki
+```
+
+5. Optionally do the first release manually:
+
+```bash
+npm run check
+npm publish --access public
+```
+
+6. After that, use the release/tag flow for future versions.
 
 ### Required repository secret
 
