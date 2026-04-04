@@ -1,0 +1,58 @@
+{
+  "name": "pi-llm-wiki",
+  "version": "0.1.0",
+  "description": "A Pi package for persistent markdown wikis with source capture, generated metadata, linting, and an LLM wiki-maintainer skill.",
+  "type": "module",
+  "license": "MIT",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "wiki",
+    "obsidian",
+    "knowledge-base",
+    "llm",
+    "research",
+    "pkm"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Kausik-A/pi-llm-wiki.git"
+  },
+  "homepage": "https://github.com/Kausik-A/pi-llm-wiki#readme",
+  "bugs": {
+    "url": "https://github.com/Kausik-A/pi-llm-wiki/issues"
+  },
+  "files": [
+    "extensions",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md",
+    "tsconfig.json"
+  ],
+  "scripts": {
+    "check": "node --experimental-strip-types ./scripts/check.ts",
+    "version:patch": "npm version patch",
+    "version:minor": "npm version minor",
+    "version:major": "npm version major",
+    "prepublishOnly": "npm run check"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions/llm-wiki/index.ts"
+    ]
+  },
+  "dependencies": {
+    "gray-matter": "^4.0.3"
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-ai": "*",
+    "@mariozechner/pi-coding-agent": "*",
+    "@sinclair/typebox": "*"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
