@@ -4,6 +4,17 @@ All notable changes to this project should be documented in this file.
 
 The format is based on Keep a Changelog and the project uses Semantic Versioning.
 
+## [Unreleased]
+
+### Added
+- 
+
+### Changed
+- 
+
+### Fixed
+- 
+
 ## [0.1.0] - 2026-04-04
 
 ### Added

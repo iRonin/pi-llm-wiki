@@ -284,17 +284,52 @@ The bundled `llm-wiki` skill teaches Pi to:
 
 ## Versioning and releases
 
-This package uses **Semantic Versioning**.
+This package uses **Semantic Versioning** and includes a release/tag flow built for repeatable publishes.
 
-### Update the version
+### Release flow
+
+1. Add notes under `## [Unreleased]` in [`CHANGELOG.md`](./CHANGELOG.md)
+2. Run one of:
 
 ```bash
-npm run version:patch
-npm run version:minor
-npm run version:major
+npm run release:patch
+npm run release:minor
+npm run release:major
 ```
 
-### Publish a new release
+This will:
+- verify the git working tree is clean
+- verify you are on `main`
+- run `npm run check`
+- bump the package version
+- move `Unreleased` notes into a dated version section in `CHANGELOG.md`
+- create a release commit
+- create a matching git tag like `v0.1.1`
+
+3. Push the release commit and tag:
+
+```bash
+npm run release:push
+```
+
+4. GitHub Actions publishes the tagged version to npm and creates a GitHub Release.
+
+### GitHub Actions
+
+This repo includes:
+
+- **CI** on push and pull request: runs `npm ci`, `npm run check`, and `npm pack --dry-run`
+- **Release** on `v*` tags: runs checks, publishes to npm, and creates a GitHub release with generated notes
+
+### Required repository secret
+
+To enable npm publishing from GitHub Actions, add this repository secret:
+
+- `NPM_TOKEN` — an npm access token with publish permissions for `pi-llm-wiki`
+
+### Manual fallback publish
+
+If you ever need to publish manually:
 
 ```bash
 npm run check
@@ -306,10 +341,6 @@ Then users can update with:
 ```bash
 pi update
 ```
-
-### Changelog
-
-Project changes are tracked in [`CHANGELOG.md`](./CHANGELOG.md).
 
 ## Local development
 
