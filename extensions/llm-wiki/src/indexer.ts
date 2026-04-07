@@ -123,16 +123,25 @@ export async function rebuildRegistryAndIndex(root: string): Promise<{
   };
 }
 
-async function walkMarkdownFiles(dir: string): Promise<string[]> {
+// Guard against wikis with an unreasonable number of files (symlink loops,
+// runaway generation, etc.).
+const MAX_WIKI_FILES = 10_000;
+
+async function walkMarkdownFiles(
+  dir: string,
+  counter = { n: 0 },
+): Promise<string[]> {
   try {
     const entries = await readdir(dir, { withFileTypes: true });
     const files: string[] = [];
     for (const entry of entries) {
+      if (counter.n >= MAX_WIKI_FILES) break;
       const full = join(dir, entry.name);
       if (entry.isDirectory()) {
-        files.push(...(await walkMarkdownFiles(full)));
+        files.push(...(await walkMarkdownFiles(full, counter)));
       } else if (entry.isFile() && entry.name.endsWith(".md")) {
         files.push(full);
+        counter.n++;
       }
     }
     return files.sort();

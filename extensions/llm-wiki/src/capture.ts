@@ -2,9 +2,91 @@ import { createHash } from "node:crypto";
 import { mkdir, readdir, readFile, stat, writeFile, copyFile } from "node:fs/promises";
 import { basename, extname, join } from "node:path";
 import { readTemplate, renderTemplate, writePage } from "./frontmatter.ts";
-import { resolveFrom, sourcePacketDir, sourcePagePath, toRelative } from "./paths.ts";
+import { isWithin, resolveFrom, sourcePacketDir, sourcePagePath, toRelative } from "./paths.ts";
 import { makeSourceId } from "./slug.ts";
 import type { CaptureParams, CaptureResult, SourceManifest, WikiConfig } from "./types.ts";
+
+// ---------------------------------------------------------------------------
+// Security guards
+// ---------------------------------------------------------------------------
+
+// Cap URL-fetched content at 50 MB to prevent memory exhaustion.
+const MAX_URL_RESPONSE_BYTES = 50 * 1024 * 1024;
+
+// Maximum redirect hops when following a URL.
+const MAX_REDIRECTS = 5;
+
+/**
+ * Block URLs that target private/loopback/cloud-metadata addresses.
+ * Checked syntactically (no DNS resolution) on every hop of a redirect chain.
+ * Prevents SSRF attacks where an LLM-supplied or prompt-injected URL probes
+ * internal services such as the AWS EC2 metadata endpoint (169.254.169.254).
+ */
+const PRIVATE_HOST_RE = [
+  /^localhost$/i,
+  /^127\./,              // IPv4 loopback
+  /^0\./,               // IPv4 this-network
+  /^10\./,              // RFC-1918 class A
+  /^172\.(1[6-9]|2[0-9]|3[01])\./,  // RFC-1918 class B
+  /^192\.168\./,        // RFC-1918 class C
+  /^169\.254\./,        // link-local / cloud metadata (AWS, GCP, Azure)
+  /^0\.0\.0\.0$/,       // unspecified
+  /^::1$/,              // IPv6 loopback
+  /^fc[0-9a-f]{2}:/i,   // IPv6 ULA (fc00::/7)
+  /^fe[89ab][0-9a-f]:/i, // IPv6 link-local (fe80::/10)
+];
+
+function assertSafeUrl(raw: string): URL {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new Error(`Invalid URL: ${raw}`);
+  }
+
+  if (url.protocol !== "https:" && url.protocol !== "http:") {
+    throw new Error(`Unsupported URL protocol: ${url.protocol}`);
+  }
+
+  // Strip IPv6 brackets so the regex tests work uniformly.
+  const hostname = url.hostname.replace(/^\[|\]$/g, "");
+  for (const pattern of PRIVATE_HOST_RE) {
+    if (pattern.test(hostname)) {
+      throw new Error(
+        `URL targets a private or reserved address and cannot be fetched: ${hostname}`,
+      );
+    }
+  }
+
+  return url;
+}
+
+/**
+ * Fetch a URL with SSRF protection on every redirect hop and a response-body
+ * size cap.  Replaces bare `fetch(value)` in materializeUrl.
+ */
+async function safeFetch(rawUrl: string, signal?: AbortSignal): Promise<Response> {
+  let current = rawUrl;
+  let hopsLeft = MAX_REDIRECTS;
+
+  while (true) {
+    assertSafeUrl(current);
+
+    const response = await fetch(current, { signal, redirect: "manual" });
+
+    if (response.status >= 300 && response.status < 400) {
+      if (hopsLeft <= 0) throw new Error("Too many redirects");
+      const location = response.headers.get("location");
+      if (!location) throw new Error("Redirect with no Location header");
+      // Resolve relative redirects and re-check for private hosts.
+      current = new URL(location, current).toString();
+      hopsLeft--;
+      continue;
+    }
+
+    return response;
+  }
+}
 
 export interface CommandRunner {
   exec(command: string, args: string[], options?: { signal?: AbortSignal; timeout?: number }): Promise<{
@@ -168,6 +250,15 @@ async function materializeFile(
   signal?: AbortSignal,
 ): Promise<MaterializedInput> {
   const absoluteInput = resolveFrom(cwd, value);
+
+  // Guard against path traversal: only allow files within the working directory.
+  // This prevents an LLM (potentially prompt-injected) from exfiltrating
+  // arbitrary files such as ~/.pi/agent/auth.json or ~/.ssh/id_rsa.
+  if (!isWithin(cwd, absoluteInput)) {
+    throw new Error(
+      `File path escapes the working directory and cannot be captured: ${absoluteInput}`,
+    );
+  }
   const extension = extname(absoluteInput) || ".bin";
   const originalPath = join(packetDir, "original", `source${extension}`);
   await copyFile(absoluteInput, originalPath);
@@ -211,15 +302,29 @@ async function materializeUrl(
   runner: CommandRunner,
   signal?: AbortSignal,
 ): Promise<MaterializedInput> {
-  const response = await fetch(value, { signal });
+  const response = await safeFetch(value, signal);
   if (!response.ok) {
     throw new Error(`Failed to fetch ${value}: ${response.status} ${response.statusText}`);
+  }
+
+  // Reject oversized responses before buffering to prevent memory exhaustion.
+  const contentLength = response.headers.get("content-length");
+  if (contentLength && Number.parseInt(contentLength, 10) > MAX_URL_RESPONSE_BYTES) {
+    throw new Error(
+      `URL response too large: ${contentLength} bytes (limit ${MAX_URL_RESPONSE_BYTES})`,
+    );
   }
 
   const contentType = response.headers.get("content-type") || "application/octet-stream";
   const extension = extensionFromContentType(contentType) || extensionFromUrl(value) || ".bin";
   const originalPath = join(packetDir, "original", `source${extension}`);
   const buffer = Buffer.from(await response.arrayBuffer());
+
+  if (buffer.byteLength > MAX_URL_RESPONSE_BYTES) {
+    throw new Error(
+      `URL response body too large: ${buffer.byteLength} bytes (limit ${MAX_URL_RESPONSE_BYTES})`,
+    );
+  }
   await writeFile(originalPath, buffer);
 
   let extractedMarkdown = await runMarkitdown(value, runner, signal);

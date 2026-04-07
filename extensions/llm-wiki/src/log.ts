@@ -13,6 +13,16 @@ export async function appendEvent(root: string, event: WikiEvent): Promise<void>
   await writeFile(eventsPath, `${existing.map((entry) => JSON.stringify(entry)).join("\n")}\n`, "utf8");
 }
 
+function isValidEvent(value: unknown): value is WikiEvent {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const e = value as Record<string, unknown>;
+  return (
+    typeof e["ts"] === "string" &&
+    typeof e["kind"] === "string" &&
+    typeof e["title"] === "string"
+  );
+}
+
 export async function readEvents(root: string): Promise<WikiEvent[]> {
   try {
     const raw = await readFile(metaPath(root, "events.jsonl"), "utf8");
@@ -20,7 +30,13 @@ export async function readEvents(root: string): Promise<WikiEvent[]> {
       .split(/\r?\n/)
       .map((line) => line.trim())
       .filter(Boolean)
-      .map((line) => JSON.parse(line) as WikiEvent);
+      .map((line) => {
+        const parsed: unknown = JSON.parse(line);
+        if (!isValidEvent(parsed)) {
+          throw new Error(`Malformed event in events.jsonl: ${line.slice(0, 120)}`);
+        }
+        return parsed;
+      });
   } catch {
     return [];
   }

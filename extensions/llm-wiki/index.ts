@@ -31,10 +31,41 @@ export default function llmWikiExtension(pi: ExtensionAPI) {
   }));
 
   pi.on("tool_call", async (event, ctx) => {
-    if (event.toolName !== "write" && event.toolName !== "edit") return undefined;
+    if (
+      event.toolName !== "write" &&
+      event.toolName !== "edit" &&
+      event.toolName !== "bash"
+    ) return undefined;
 
     const root = await maybeResolveWikiRoot(ctx.cwd);
     if (!root) return undefined;
+
+    // For bash commands we cannot reliably extract file paths, so we do a
+    // best-effort string scan for known protected path fragments.  This is
+    // intentionally conservative to avoid false positives while still
+    // catching the obvious "echo … > meta/registry.json" bypass.
+    if (event.toolName === "bash") {
+      const command = typeof (event.input as Record<string, unknown>)["command"] === "string"
+        ? (event.input as Record<string, unknown>)["command"] as string
+        : "";
+      const protectedFragments = [
+        "raw/",
+        "meta/registry.json",
+        "meta/backlinks.json",
+        "meta/events.jsonl",
+        "meta/index.md",
+        "meta/log.md",
+        "meta/lint-report.md",
+      ];
+      for (const fragment of protectedFragments) {
+        if (command.includes(fragment)) {
+          const msg = `llm-wiki: bash command references protected path fragment "${fragment}"`;
+          if (ctx.hasUI) ctx.ui.notify(msg, "warning");
+          return { block: true, reason: msg };
+        }
+      }
+      return undefined;
+    }
 
     const analysis = analyzeToolMutation(root, event.toolName, event.input, ctx.cwd);
     if (analysis.protectedPaths.length > 0) {
