@@ -11,6 +11,15 @@ import { analyzeToolMutation } from "./src/guards.ts";
 import { rebuildRegistryAndIndex } from "./src/indexer.ts";
 import { runLint } from "./src/lint.ts";
 import { appendEvent, markSourcesIntegrated, readEvents, rebuildLog } from "./src/log.ts";
+import {
+  EXAMPLE_MODES,
+  classifyTool,
+  clearModesCache,
+  formatModesHelp,
+  loadModes,
+  resolveModel,
+} from "./src/modes.ts";
+import type { SavedMainMode, ThinkingLevel, ToolClass, WikiModes } from "./src/modes.ts";
 import { metaPath, lockPath, maybeResolveWikiRoot, resolveWikiRoot, toRelative } from "./src/paths.ts";
 import { searchRegistry } from "./src/search.ts";
 import { bootstrapVault, ensureCanonicalPage } from "./src/scaffold.ts";
@@ -19,6 +28,27 @@ import type { RegistryData, StatusSummary, WikiConfig, WikiEvent, WikiPageType }
 const baseDir = dirname(fileURLToPath(import.meta.url));
 const skillPath = join(baseDir, "resources", "skills", "llm-wiki", "SKILL.md");
 const dirtyRoots = new Set<string>();
+
+// ---------------------------------------------------------------------------
+// Mode state
+// ---------------------------------------------------------------------------
+
+// Snapshot of model + thinking level from before the first wiki mode switch
+// this session.  Cleared on session_start.
+let savedMainMode: SavedMainMode | null = null;
+
+// When the user explicitly sets a mode via /wiki-grunt or /wiki-research,
+// that mode is "sticky" — it persists across agent_end instead of auto-
+// restoring to main after each message.  Cleared by /wiki-main.
+let stickyMode: ToolClass | null = null;
+
+// Tracks the highest-priority tool class seen in the current turn so we
+// apply only one model switch per turn (researcher > worker > none).
+let pendingSwitch: ToolClass = "none";
+
+// Per-root set to suppress the "no modes.json" notification after the first
+// occurrence per session.
+const warnedNoModes = new Set<string>();
 
 const PAGE_TYPE_ENUM = StringEnum(["source", "concept", "entity", "synthesis", "analysis"] as const);
 const CANONICAL_TYPE_ENUM = StringEnum(["concept", "entity", "synthesis", "analysis"] as const);
@@ -30,20 +60,35 @@ export default function llmWikiExtension(pi: ExtensionAPI) {
     skillPaths: [skillPath],
   }));
 
+  // Clear all mode state at session start so each new launch begins in
+  // whatever model/thinking the user started pi with.
+  pi.on("session_start", () => {
+    savedMainMode = null;
+    stickyMode = null;
+    pendingSwitch = "none";
+    warnedNoModes.clear();
+    clearModesCache();
+  });
+
+  // Reset the per-turn pending switch tracker.
+  pi.on("turn_start", () => {
+    pendingSwitch = "none";
+  });
+
   pi.on("tool_call", async (event, ctx) => {
-    if (
-      event.toolName !== "write" &&
-      event.toolName !== "edit" &&
-      event.toolName !== "bash"
-    ) return undefined;
+    const isFileOp = event.toolName === "write" || event.toolName === "edit" || event.toolName === "bash";
+    const toolClass = classifyTool(event.toolName);
+    const isWikiTool = toolClass !== "none";
+
+    // Nothing to do if this tool is neither a file mutation nor a wiki tool.
+    if (!isFileOp && !isWikiTool) return undefined;
 
     const root = await maybeResolveWikiRoot(ctx.cwd);
     if (!root) return undefined;
 
-    // For bash commands we cannot reliably extract file paths, so we do a
-    // best-effort string scan for known protected path fragments.  This is
-    // intentionally conservative to avoid false positives while still
-    // catching the obvious "echo … > meta/registry.json" bypass.
+    // -----------------------------------------------------------------------
+    // 1. Bash guard — best-effort fragment scan for protected paths.
+    // -----------------------------------------------------------------------
     if (event.toolName === "bash") {
       const command = typeof (event.input as Record<string, unknown>)["command"] === "string"
         ? (event.input as Record<string, unknown>)["command"] as string
@@ -67,21 +112,69 @@ export default function llmWikiExtension(pi: ExtensionAPI) {
       return undefined;
     }
 
-    const analysis = analyzeToolMutation(root, event.toolName, event.input, ctx.cwd);
-    if (analysis.protectedPaths.length > 0) {
-      const protectedList = analysis.protectedPaths.map((path) => toRelative(root, path)).join(", ");
-      if (ctx.hasUI) ctx.ui.notify(`Blocked protected wiki path(s): ${protectedList}`, "warning");
-      return { block: true, reason: `llm-wiki protects these paths: ${protectedList}` };
+    // -----------------------------------------------------------------------
+    // 2. Write / edit guard — block direct mutations to protected paths.
+    // -----------------------------------------------------------------------
+    if (isFileOp) {
+      const analysis = analyzeToolMutation(root, event.toolName, event.input, ctx.cwd);
+      if (analysis.protectedPaths.length > 0) {
+        const protectedList = analysis.protectedPaths.map((path) => toRelative(root, path)).join(", ");
+        if (ctx.hasUI) ctx.ui.notify(`Blocked protected wiki path(s): ${protectedList}`, "warning");
+        return { block: true, reason: `llm-wiki protects these paths: ${protectedList}` };
+      }
+      if (analysis.wikiPaths.length > 0) {
+        dirtyRoots.add(root);
+      }
     }
 
-    if (analysis.wikiPaths.length > 0) {
-      dirtyRoots.add(root);
+    // -----------------------------------------------------------------------
+    // 3. Automatic model switching.
+    //
+    // When a wiki tool fires and no sticky mode is set, switch to the
+    // appropriate model for the turns that follow this tool call.
+    // researcher > worker: if a turn calls both tool types, the last
+    // tool_call event wins by applying a higher-priority upgrade.
+    // -----------------------------------------------------------------------
+    if (isWikiTool && !stickyMode) {
+      // Only upgrade, never downgrade within a turn.
+      if (toolClass === "researcher" || pendingSwitch === "none") {
+        pendingSwitch = toolClass;
+        const modes = await loadModes(root);
+        if (!modes) {
+          // Warn once per root per session that auto-switching is inactive.
+          if (!warnedNoModes.has(root)) {
+            warnedNoModes.add(root);
+            if (ctx.hasUI) ctx.ui.notify(
+              "llm-wiki: no .wiki/modes.json found — auto model switching inactive. Run /wiki-modes for setup.",
+              "info",
+            );
+          }
+        } else {
+          const modeConfig = modes[pendingSwitch];
+          const allModels = ctx.modelRegistry.getAll();
+          const target = resolveModel(allModels, modeConfig.model);
+          if (target && ctx.model) {
+            if (!savedMainMode) {
+              savedMainMode = {
+                provider: ctx.model.provider,
+                modelId: ctx.model.id,
+                thinking: pi.getThinkingLevel() as ThinkingLevel,
+              };
+            }
+            await pi.setModel(target);
+            pi.setThinkingLevel(modeConfig.thinking);
+          }
+        }
+      }
     }
 
     return undefined;
   });
 
+  // Merged agent_end: rebuild dirty wiki artifacts first, then restore model.
+  // Order matters — metadata should be current before the next LLM turn.
   pi.on("agent_end", async (_event, ctx) => {
+    // 1. Rebuild any dirty wiki roots.
     for (const root of [...dirtyRoots]) {
       try {
         await withRootLock(root, async () => {
@@ -94,6 +187,19 @@ export default function llmWikiExtension(pi: ExtensionAPI) {
         }
       }
     }
+
+    // 2. Restore main model unless a sticky manual mode is set.
+    if (stickyMode !== null || !savedMainMode) return;
+    const allModels = ctx.modelRegistry.getAll();
+    const target = resolveModel(
+      allModels,
+      `${savedMainMode.provider}/${savedMainMode.modelId}`,
+    );
+    if (!target) return;
+    const thinking = savedMainMode.thinking;
+    savedMainMode = null;
+    await pi.setModel(target);
+    pi.setThinkingLevel(thinking);
   });
 
   pi.registerTool({
@@ -376,6 +482,125 @@ export default function llmWikiExtension(pi: ExtensionAPI) {
         await rebuildAllGeneratedArtifacts(root);
       });
       ctx.ui.notify("llm-wiki metadata rebuilt", "info");
+    },
+  });
+
+  // ---------------------------------------------------------------------------
+  // Mode-switching commands
+  // ---------------------------------------------------------------------------
+
+  async function applyMode(
+    modeName: keyof WikiModes,
+    label: string,
+    ctx: Parameters<Parameters<typeof pi.registerCommand>[1]["handler"]>[1],
+    sticky = true,
+  ) {
+    const root = await maybeResolveWikiRoot(ctx.cwd);
+    const modes = root ? await loadModes(root) : null;
+
+    if (!modes) {
+      ctx.ui.notify(
+        root
+          ? `No .wiki/modes.json in ${root}. Run /wiki-modes to see setup instructions.`
+          : "No wiki found in the current directory.",
+        "warning",
+      );
+      return;
+    }
+
+    const config = modes[modeName];
+    const allModels = ctx.modelRegistry.getAll();
+    const target = resolveModel(allModels, config.model);
+
+    if (!target) {
+      ctx.ui.notify(
+        `llm-wiki: model not found: "${config.model}". Check your .wiki/modes.json.`,
+        "error",
+      );
+      return;
+    }
+
+    // Snapshot current state before the first wiki mode switch this session.
+    if (!savedMainMode && ctx.model) {
+      savedMainMode = {
+        provider: ctx.model.provider,
+        modelId: ctx.model.id,
+        thinking: pi.getThinkingLevel() as ThinkingLevel,
+      };
+    }
+
+    const ok = await pi.setModel(target);
+    if (!ok) {
+      ctx.ui.notify(
+        `llm-wiki: no API key configured for "${config.model}".`,
+        "error",
+      );
+      return;
+    }
+
+    pi.setThinkingLevel(config.thinking);
+    if (sticky) stickyMode = modeName as ToolClass;
+    ctx.ui.notify(
+      `llm-wiki: ${label} mode (sticky) — ${target.provider}/${target.id} / thinking:${config.thinking}`,
+      "info",
+    );
+  }
+
+  pi.registerCommand("wiki-research", {
+    description: "Switch to researcher mode (model + thinking level from .wiki/modes.json)",
+    handler: async (_args, ctx) => {
+      await applyMode("researcher", "researcher", ctx);
+    },
+  });
+
+  pi.registerCommand("wiki-grunt", {
+    description: "Switch to worker mode (cheaper model + lower thinking from .wiki/modes.json)",
+    handler: async (_args, ctx) => {
+      await applyMode("worker", "worker", ctx);
+    },
+  });
+
+  pi.registerCommand("wiki-main", {
+    description: "Restore the model and thinking level that were active before /wiki-grunt or /wiki-research",
+    handler: async (_args, ctx) => {
+      if (!savedMainMode) {
+        ctx.ui.notify("llm-wiki: no saved main mode — already in main mode.", "info");
+        return;
+      }
+
+      const allModels = ctx.modelRegistry.getAll();
+      const target = resolveModel(
+        allModels,
+        `${savedMainMode.provider}/${savedMainMode.modelId}`,
+      );
+
+      if (!target) {
+        ctx.ui.notify(
+          `llm-wiki: original model ${savedMainMode.provider}/${savedMainMode.modelId} is no longer available.`,
+          "warning",
+        );
+        return;
+      }
+
+      const thinking = savedMainMode.thinking;
+      savedMainMode = null;
+      stickyMode = null; // clear sticky so auto-switching resumes
+
+      await pi.setModel(target);
+      pi.setThinkingLevel(thinking);
+      ctx.ui.notify(
+        `llm-wiki: main mode restored — ${target.provider}/${target.id} / thinking:${thinking}`,
+        "info",
+      );
+    },
+  });
+
+  pi.registerCommand("wiki-modes", {
+    description: "Show current .wiki/modes.json config or print the setup template",
+    handler: async (_args, ctx) => {
+      const root = await maybeResolveWikiRoot(ctx.cwd);
+      const modes = root ? await loadModes(root) : null;
+      ctx.ui.notify(formatModesHelp(modes), modes ? "info" : "warning");
     },
   });
 }
